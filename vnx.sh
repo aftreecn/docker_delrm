@@ -33,17 +33,66 @@ fi
 VNC_DIR="$USER_HOME/.vnc"
 mkdir -p "$VNC_DIR"
 
-# 3. 交互式配置 VNC 端口和密码
+# 3. 交互式配置 VNC 端口和密码（增加严格校验）
 echo -e "${YELLOW}[3/5] 开始配置 VNC 端口和密码...${NC}"
-# 输入端口（默认 5901，对应 display :1）
-read -p "请输入 VNC 端口（默认 5901，建议使用 5901-5910 之间）：" VNC_PORT
-VNC_PORT=${VNC_PORT:-5901}
-# 计算 display 号（5901 -> :1，5902 -> :2...）
+
+# 端口校验（限制 5901-5910）
+while true; do
+    read -p "请输入 VNC 端口（默认 5901，仅支持 5901-5910 之间）：" VNC_PORT
+    VNC_PORT=${VNC_PORT:-5901}
+    # 校验端口范围
+    if [[ $VNC_PORT -ge 5901 && $VNC_PORT -le 5910 ]]; then
+        break
+    else
+        echo -e "${RED}错误：端口必须在 5901-5910 之间，请重新输入！${NC}"
+    fi
+done
+# 计算 display 号
 DISPLAY_NUM=$((VNC_PORT - 5900))
 
-# 设置 VNC 密码
-echo -e "\n请设置 VNC 连接密码（仅支持 6-8 位）："
-su - ${SUDO_USER:-root} -c "vncpasswd $VNC_DIR/passwd"
+# VNC 普通密码校验（6-8 位）
+while true; do
+    echo -e "\n请设置 VNC 连接密码（必须 6-8 位）："
+    read -s -p "密码：" PASSWORD1
+    echo
+    read -s -p "确认密码：" PASSWORD2
+    echo
+    # 校验密码长度和一致性
+    if [ ${#PASSWORD1} -lt 6 ] || [ ${#PASSWORD1} -gt 8 ]; then
+        echo -e "${RED}错误：密码长度必须是 6-8 位！${NC}"
+    elif [ "$PASSWORD1" != "$PASSWORD2" ]; then
+        echo -e "${RED}错误：两次输入的密码不一致！${NC}"
+    else
+        break
+    fi
+done
+
+# 只读密码校验（可选，同样 6-8 位）
+while true; do
+    read -p "是否设置只读密码（y/n，建议 n）：" READ_ONLY_CHOICE
+    READ_ONLY_CHOICE=${READ_ONLY_CHOICE:-n}
+    if [[ $READ_ONLY_CHOICE == "y" || $READ_ONLY_CHOICE == "Y" ]]; then
+        read -s -p "只读密码：" RO_PASSWORD1
+        echo
+        read -s -p "确认只读密码：" RO_PASSWORD2
+        echo
+        if [ ${#RO_PASSWORD1} -lt 6 ] || [ ${#RO_PASSWORD1} -gt 8 ]; then
+            echo -e "${RED}错误：只读密码长度必须是 6-8 位！${NC}"
+        elif [ "$RO_PASSWORD1" != "$RO_PASSWORD2" ]; then
+            echo -e "${RED}错误：两次输入的只读密码不一致！${NC}"
+        else
+            # 写入密码到 passwd 文件（避免交互崩溃）
+            echo -e "$PASSWORD1\n$RO_PASSWORD1\nn" | su - ${SUDO_USER:-root} -c "vncpasswd -f > $VNC_DIR/passwd"
+            break
+        fi
+    elif [[ $READ_ONLY_CHOICE == "n" || $READ_ONLY_CHOICE == "N" ]]; then
+        # 仅设置普通密码
+        echo -e "$PASSWORD1\n$PASSWORD1\nn" | su - ${SUDO_USER:-root} -c "vncpasswd -f > $VNC_DIR/passwd"
+        break
+    else
+        echo -e "${RED}错误：请输入 y 或 n！${NC}"
+    fi
+done
 
 # 4. 生成 XFCE 启动配置文件
 echo -e "${YELLOW}[4/5] 正在生成 XFCE 启动配置...${NC}"
@@ -97,7 +146,8 @@ echo -e "${GREEN}安装配置完成！${NC}"
 echo -e "${GREEN}VNC 连接信息：${NC}"
 echo -e "  服务器IP:端口 → $(hostname -I | awk '{print $1}'):$VNC_PORT"
 echo -e "  分辨率 → 1920x1080"
-echo -e "  密码 → 你刚才设置的密码"
+echo -e "  普通密码 → 你刚才设置的密码"
+echo -e "  只读密码 → $(if [ $READ_ONLY_CHOICE == "y" ]; then echo "已设置"; else echo "未设置"; fi)"
 echo ""
 echo -e "${YELLOW}常用命令：${NC}"
 echo -e "  重启VNC → systemctl restart vncserver@$DISPLAY_NUM.service"
