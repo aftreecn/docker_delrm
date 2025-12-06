@@ -23,15 +23,19 @@ echo -e "${YELLOW}[1/5] 正在更新系统并安装基础依赖...${NC}"
 apt update -y && apt upgrade -y
 apt install -y xfce4 xfce4-goodies tightvncserver xfonts-base dbus-x11
 
-# 2. 配置 VNC 基础环境
+# 2. 配置 VNC 基础环境（修复权限核心）
 echo -e "${YELLOW}[2/5] 正在配置 VNC 基础环境...${NC}"
-# 创建 VNC 配置目录（针对当前执行用户，非 root 需调整）
-USER_HOME=$(eval echo ~$SUDO_USER)
-if [ -z "$SUDO_USER" ]; then
-    USER_HOME=/root
-fi
+# 定义普通用户（避免 root 权限污染）
+TARGET_USER=${SUDO_USER:-root}
+TARGET_UID=$(id -u $TARGET_USER)
+TARGET_GID=$(id -g $TARGET_USER)
+USER_HOME=$(eval echo ~$TARGET_USER)
 VNC_DIR="$USER_HOME/.vnc"
+
+# 创建目录并强制赋予普通用户权限
 mkdir -p "$VNC_DIR"
+chown -R $TARGET_UID:$TARGET_GID "$VNC_DIR"
+chmod 755 "$VNC_DIR"
 
 # 3. 交互式配置 VNC 端口和密码（增加严格校验）
 echo -e "${YELLOW}[3/5] 开始配置 VNC 端口和密码...${NC}"
@@ -81,18 +85,22 @@ while true; do
         elif [ "$RO_PASSWORD1" != "$RO_PASSWORD2" ]; then
             echo -e "${RED}错误：两次输入的只读密码不一致！${NC}"
         else
-            # 写入密码到 passwd 文件（避免交互崩溃）
-            echo -e "$PASSWORD1\n$RO_PASSWORD1\nn" | su - ${SUDO_USER:-root} -c "vncpasswd -f > $VNC_DIR/passwd"
+            # 用普通用户权限写入密码（核心修复）
+            echo -e "$PASSWORD1\n$RO_PASSWORD1\nn" | su - $TARGET_USER -c "vncpasswd -f > $VNC_DIR/passwd"
             break
         fi
     elif [[ $READ_ONLY_CHOICE == "n" || $READ_ONLY_CHOICE == "N" ]]; then
-        # 仅设置普通密码
-        echo -e "$PASSWORD1\n$PASSWORD1\nn" | su - ${SUDO_USER:-root} -c "vncpasswd -f > $VNC_DIR/passwd"
+        # 仅设置普通密码（用普通用户权限）
+        echo -e "$PASSWORD1\n$PASSWORD1\nn" | su - $TARGET_USER -c "vncpasswd -f > $VNC_DIR/passwd"
         break
     else
         echo -e "${RED}错误：请输入 y 或 n！${NC}"
     fi
 done
+
+# 修复 passwd 文件权限
+chown $TARGET_UID:$TARGET_GID "$VNC_DIR/passwd"
+chmod 600 "$VNC_DIR/passwd"
 
 # 4. 生成 XFCE 启动配置文件
 echo -e "${YELLOW}[4/5] 正在生成 XFCE 启动配置...${NC}"
@@ -102,9 +110,9 @@ xrdb $USER_HOME/.Xresources
 startxfce4 &
 EOF
 
-# 设置配置文件权限
+# 设置配置文件权限（普通用户可执行）
 chmod +x "$VNC_DIR/xstartup"
-chown -R ${SUDO_USER:-root}:${SUDO_USER:-root} "$VNC_DIR"
+chown $TARGET_UID:$TARGET_GID "$VNC_DIR/xstartup"
 
 # 5. 创建 VNC 服务文件（开机自启）
 echo -e "${YELLOW}[5/5] 正在创建系统服务并设置开机自启...${NC}"
@@ -116,7 +124,8 @@ After=network.target
 
 [Service]
 Type=forking
-User=${SUDO_USER:-root}
+User=$TARGET_USER
+Group=$TARGET_USER
 PAMName=login
 WorkingDirectory=$USER_HOME
 ExecStart=/usr/bin/vncserver :$DISPLAY_NUM -geometry 1920x1080 -depth 24 -dpi 96
@@ -146,8 +155,7 @@ echo -e "${GREEN}安装配置完成！${NC}"
 echo -e "${GREEN}VNC 连接信息：${NC}"
 echo -e "  服务器IP:端口 → $(hostname -I | awk '{print $1}'):$VNC_PORT"
 echo -e "  分辨率 → 1920x1080"
-echo -e "  普通密码 → 你刚才设置的密码"
-echo -e "  只读密码 → $(if [ $READ_ONLY_CHOICE == "y" ]; then echo "已设置"; else echo "未设置"; fi)"
+echo -e "  密码 → 你刚才设置的密码"
 echo ""
 echo -e "${YELLOW}常用命令：${NC}"
 echo -e "  重启VNC → systemctl restart vncserver@$DISPLAY_NUM.service"
